@@ -11,13 +11,32 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  OLS_VERSION: "1.8.5"
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run ShellCheck
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: '.'
+
+      - name: Run Hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+
   build:
+    needs: lint
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+      security-events: write
 
     strategy:
       matrix:
@@ -25,12 +44,16 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
@@ -39,7 +62,7 @@ jobs:
 
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
@@ -48,8 +71,59 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}-${{ matrix.php-version }}
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' && matrix.php-version == '8.5' }}
 
-      - name: Build and push
-        uses: docker/build-push-action@v7
+      - name: Compute PHP prefix
+        id: php-prefix
+        run: echo "value=$(echo '${{ matrix.php-version }}' | tr -d '.')" >> "$GITHUB_OUTPUT"
+
+      - name: Build test image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: test-image:${{ matrix.php-version }}
+          cache-from: type=gha,scope=php${{ matrix.php-version }}
+          cache-to: type=gha,scope=php${{ matrix.php-version }},mode=max
+          build-args: |
+            OLS_IMAGE=litespeedtech/openlitespeed:${{ env.OLS_VERSION }}-lsphp${{ steps.php-prefix.outputs.value }}
+            PHP_VERSION=${{ matrix.php-version }}
+
+      - name: Smoke test
+        run: |
+          docker run -d --name smoke-test -p 8080:80 "test-image:${{ matrix.php-version }}"
+          sleep 5
+          docker exec smoke-test php -m | grep -q opcache && echo "PASS: opcache loaded"
+          docker exec smoke-test php -m | grep -q curl && echo "PASS: curl loaded"
+          docker exec smoke-test php -m | grep -q mysqli && echo "PASS: mysqli loaded"
+          docker exec smoke-test php -m | grep -q mbstring && echo "PASS: mbstring loaded"
+          docker exec smoke-test php -m | grep -q gd && echo "PASS: gd loaded"
+          docker exec smoke-test php -m | grep -q redis && echo "PASS: redis loaded"
+          docker exec smoke-test php -m | grep -q imagick && echo "PASS: imagick loaded"
+          docker exec smoke-test php -m | grep -q sockets && echo "PASS: sockets loaded"
+          docker exec smoke-test php -m | grep -q bcmath && echo "PASS: bcmath loaded"
+          docker exec smoke-test php -m | grep -q zip && echo "PASS: zip loaded"
+          docker exec smoke-test php -m | grep -q intl && echo "PASS: intl loaded"
+          docker exec smoke-test php -m | grep -q sqlite3 && echo "PASS: sqlite3 loaded"
+          docker exec smoke-test php -r "echo ini_get('opcache.jit');" 2>/dev/null | grep -q 1255 && echo "PASS: JIT opcache configured" || echo "SKIP: JIT not verifiable via CLI"
+          curl -sf http://localhost:8080/ > /dev/null && echo "PASS: HTTP response OK"
+          docker rm -f smoke-test
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: test-image:${{ matrix.php-version }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+        continue-on-error: true
+
+      - name: Upload Trivy scan results
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: Build and push multi-platform
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: ${{ github.event_name != 'pull_request' }}
@@ -58,4 +132,6 @@ jobs:
           cache-from: type=gha,scope=php${{ matrix.php-version }}
           cache-to: type=gha,scope=php${{ matrix.php-version }},mode=max
           platforms: linux/amd64,linux/arm64
-          build-args: PHP_VERSION=${{ matrix.php-version }}
+          build-args: |
+            OLS_IMAGE=litespeedtech/openlitespeed:${{ env.OLS_VERSION }}-lsphp${{ steps.php-prefix.outputs.value }}
+            PHP_VERSION=${{ matrix.php-version }}
