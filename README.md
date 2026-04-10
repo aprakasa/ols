@@ -30,6 +30,21 @@ services:
 
 mysqli, pdo_mysql, mbstring, xml, curl, zip, gd, intl, imagick, bcmath, redis, sqlite3, pdo_sqlite, sockets, opcache.
 
+## PHP Configuration
+
+Production-tuned defaults are applied via drop-in ini files:
+
+| Setting | Value |
+|---------|-------|
+| `memory_limit` | 256M |
+| `upload_max_filesize` | 100M |
+| `post_max_size` | 100M |
+| `max_execution_time` | 300 |
+| `opcache.jit` | 1255 |
+| `opcache.jit_buffer_size` | 128M |
+| `opcache.memory_consumption` | 256 |
+| `opcache.max_accelerated_files` | 20000 |
+
 ## .htaccess Auto-Reload
 
 OLS caches `.htaccess` and only re-reads on restart. This image includes a background watcher that detects `.htaccess` changes and triggers a graceful OLS reload.
@@ -39,6 +54,10 @@ OLS caches `.htaccess` and only re-reads on restart. This image includes a backg
 | `HTACCESS_WATCH_ENABLED` | `true` | Set to `false` to disable |
 | `HTACCESS_WATCH_PATH` | `/var/www/vhosts/localhost/html/` | Path to monitor |
 | `HTACCESS_WATCH_DEBOUNCE` | `1` | Debounce window in seconds |
+
+## Base Image
+
+Built on top of `litespeedtech/openlitespeed:1.8.5-lsphpXX`, pinned to a specific OpenLiteSpeed version for reproducible builds.
 
 ## License
 
