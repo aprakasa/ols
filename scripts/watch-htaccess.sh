@@ -27,7 +27,7 @@ inotifywait -r -q -m -e close_write -e moved_to -e create --format '%w%f' "$WATC
             if [ "$ELAPSED" -ge "$DEBOUNCE_SECONDS" ]; then
                 LAST_RELOAD=$NOW
                 echo "[htaccess-watcher] Detected change: ${filepath} — reloading OLS"
-                lswsctrl restart 2>/dev/null || true
+                lswsctrl reload 2>/dev/null || true
             fi
             ;;
     esac
