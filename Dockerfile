@@ -1,8 +1,18 @@
+ARG OLS_IMAGE=litespeedtech/openlitespeed:1.8.5-lsphp83
 ARG PHP_VERSION=8.3
 
-FROM litespeedtech/openlitespeed:latest
+FROM ${OLS_IMAGE}
 
 ARG PHP_VERSION
+
+LABEL org.opencontainers.image.title="aprakasa/ols" \
+      org.opencontainers.image.description="Production-ready OpenLiteSpeed with LSPHP for WordPress" \
+      org.opencontainers.image.url="https://github.com/aprakasa/ols" \
+      org.opencontainers.image.source="https://github.com/aprakasa/ols" \
+      org.opencontainers.image.vendor="aprakasa" \
+      org.opencontainers.image.licenses="MIT"
+
+COPY conf/ /tmp/php-conf/
 
 RUN PHP_PREFIX=$(echo "$PHP_VERSION" | tr -d '.') && \
     apt-get update && apt-get install -y --no-install-recommends \
@@ -15,16 +25,20 @@ RUN PHP_PREFIX=$(echo "$PHP_VERSION" | tr -d '.') && \
     lsphp${PHP_PREFIX}-imagick \
     lsphp${PHP_PREFIX}-redis \
     lsphp${PHP_PREFIX}-sqlite3 \
+    lsphp${PHP_PREFIX}-bcmath \
+    lsphp${PHP_PREFIX}-mbstring \
+    lsphp${PHP_PREFIX}-xml \
+    lsphp${PHP_PREFIX}-zip \
+    lsphp${PHP_PREFIX}-gd \
+    lsphp${PHP_PREFIX}-sockets \
     && apt-get autoremove -y \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && PHP_DIR=$(ls -d /usr/local/lsws/lsphp${PHP_PREFIX}/etc/php/*/mods-available) \
+    && cp /tmp/php-conf/php.ini "${PHP_DIR}/99-custom.ini" \
+    && cp /tmp/php-conf/opcache.ini "${PHP_DIR}/99-opcache.ini" \
+    && rm -rf /tmp/php-conf
 
-COPY conf/ /tmp/php-conf/
-RUN PHP_PREFIX=$(echo "$PHP_VERSION" | tr -d '.') && \
-    PHP_DIR=$(ls -d /usr/local/lsws/lsphp${PHP_PREFIX}/etc/php/*/mods-available) && \
-    cp /tmp/php-conf/php.ini "${PHP_DIR}/99-custom.ini" && \
-    cp /tmp/php-conf/opcache.ini "${PHP_DIR}/99-opcache.ini" && \
-    rm -rf /tmp/php-conf
 COPY scripts/watch-htaccess.sh /watch-htaccess.sh
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 
