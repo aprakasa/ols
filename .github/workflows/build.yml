@@ -121,43 +121,22 @@ jobs:
       - name: Smoke test
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:ci-php${{ matrix.php-version }}"
-          docker run -d --name smoke-test -p 8080:80 -p 8081:8088 "$IMAGE"
-          sleep 3
-
-          echo "--- OLS listener config ---"
-          docker exec smoke-test grep -A2 'address\|listener' \
-            /usr/local/lsws/conf/httpd_config.conf 2>/dev/null || true
-          echo "--- OLS default listener ---"
-          docker exec smoke-test cat \
-            /usr/local/lsws/conf/vhosts/localhost/vhconf.conf \
-            2>/dev/null | head -30 || true
-          echo "--- Checking ports ---"
-          docker exec smoke-test sh -c \
-            'for p in 80 8088 7080; do curl -sf http://localhost:$p/ \
-            >/dev/null 2>&1 && echo "Port $p: OPEN" \
-            || echo "Port $p: closed"; done' || true
+          docker run -d --name smoke-test -p 8080:8088 "$IMAGE"
 
           ok=false
           for i in $(seq 1 30); do
-            for port in 8080 8081; do
-              if curl -sf http://localhost:$port/ > /dev/null 2>&1; then
-                echo "OLS responded on host port $port"
-                ok=true
-                break 2
-              fi
-            done
-            sleep 5
+            if curl -sf http://localhost:8080/ > /dev/null 2>&1; then
+              ok=true
+              break
+            fi
+            sleep 2
           done
 
           if [ "$ok" != "true" ]; then
-            echo "--- OLS error log ---"
-            docker exec smoke-test cat /usr/local/lsws/logs/error.log 2>/dev/null | tail -30 || true
-            echo "--- OLS server log ---"
-            docker exec smoke-test cat /usr/local/lsws/logs/stderr.log 2>/dev/null | tail -30 || true
-            echo "--- Container logs ---"
+            docker exec smoke-test curl -sI http://localhost:8088/ 2>/dev/null || true
             docker logs smoke-test
             docker rm -f smoke-test
-            echo "FAIL: OLS did not respond within 150s"
+            echo "FAIL: OLS did not respond within 60s"
             exit 1
           fi
 
