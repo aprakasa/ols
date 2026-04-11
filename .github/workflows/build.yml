@@ -125,11 +125,17 @@ jobs:
           sleep 3
 
           echo "--- OLS listener config ---"
-          docker exec smoke-test grep -A2 'address\|listener\|binding' /usr/local/lsws/conf/httpd_config.conf 2>/dev/null || true
+          docker exec smoke-test grep -A2 'address\|listener' \
+            /usr/local/lsws/conf/httpd_config.conf 2>/dev/null || true
           echo "--- OLS default listener ---"
-          docker exec smoke-test cat /usr/local/lsws/conf/vhosts/localhost/vhconf.conf 2>/dev/null | head -30 || true
+          docker exec smoke-test cat \
+            /usr/local/lsws/conf/vhosts/localhost/vhconf.conf \
+            2>/dev/null | head -30 || true
           echo "--- Checking ports ---"
-          docker exec smoke-test sh -c 'for p in 80 8080 8088 7080; do curl -sf http://localhost:$p/ >/dev/null 2>&1 && echo "Port $p: OPEN" || echo "Port $p: closed"; done' || true
+          docker exec smoke-test sh -c \
+            'for p in 80 8088 7080; do curl -sf http://localhost:$p/ \
+            >/dev/null 2>&1 && echo "Port $p: OPEN" \
+            || echo "Port $p: closed"; done' || true
 
           ok=false
           for i in $(seq 1 30); do
