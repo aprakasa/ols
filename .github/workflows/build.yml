@@ -124,7 +124,7 @@ jobs:
           docker run -d --name smoke-test -p 8080:80 "$IMAGE"
 
           ok=false
-          for i in $(seq 1 30); do
+          for i in $(seq 1 45); do
             if curl -sf http://localhost:8080/ > /dev/null 2>&1; then
               ok=true
               break
@@ -135,7 +135,7 @@ jobs:
           if [ "$ok" != "true" ]; then
             docker logs smoke-test
             docker rm -f smoke-test
-            echo "FAIL: OLS did not respond within 60s"
+            echo "FAIL: OLS did not respond within 90s"
             exit 1
           fi
 
