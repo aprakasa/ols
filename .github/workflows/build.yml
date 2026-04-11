@@ -1,12 +1,31 @@
-name: Build and Push to GHCR
+name: Build and Push Docker Image
 
 on:
   push:
     branches: [main]
     tags: ['v*']
+    paths:
+      - 'Dockerfile'
+      - 'conf/**'
+      - 'scripts/**'
+      - '.github/workflows/**'
+      - 'docker-entrypoint.sh'
+      - '.hadolint.yaml'
   pull_request:
-    branches: [main]
+    paths:
+      - 'Dockerfile'
+      - 'conf/**'
+      - 'scripts/**'
+      - '.github/workflows/**'
+      - 'docker-entrypoint.sh'
+      - '.hadolint.yaml'
+  schedule:
+    - cron: '0 6 * * 1'
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   REGISTRY: ghcr.io
@@ -15,33 +34,194 @@ env:
 
 jobs:
   lint:
+    name: Lint
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Run ShellCheck
-        uses: ludeeus/action-shellcheck@master
-        with:
-          scandir: '.'
-
-      - name: Run Hadolint
+      - name: Lint Dockerfile
         uses: hadolint/hadolint-action@v3.1.0
+
+      - name: Lint shell scripts
+        uses: ludeeus/action-shellcheck@2.0.0
+
+      - name: Lint YAML files
+        uses: ibiqlik/action-yamllint@v3
         with:
-          dockerfile: Dockerfile
+          config_data: |
+            extends: default
+            rules:
+              line-length:
+                max: 120
+              truthy:
+                check-keys: false
+              document-start: disable
 
   build:
+    name: Build (PHP ${{ matrix.php-version }})
     needs: lint
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php-version: ['8.3', '8.4', '8.5']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Compute PHP prefix
+        id: php-prefix
+        run: echo "value=$(echo '${{ matrix.php-version }}' | tr -d '.')" >> "$GITHUB_OUTPUT"
+
+      - name: Build image (amd64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:ci-php${{ matrix.php-version }}
+          cache-from: type=gha,scope=php${{ matrix.php-version }}
+          cache-to: type=gha,scope=php${{ matrix.php-version }},mode=max
+          build-args: |
+            OLS_IMAGE=litespeedtech/openlitespeed:${{ env.OLS_VERSION }}-lsphp${{ steps.php-prefix.outputs.value }}
+            PHP_VERSION=${{ matrix.php-version }}
+
+      - name: Save image artifact
+        run: docker save -o /tmp/image.tar ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:ci-php${{ matrix.php-version }}
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-php${{ matrix.php-version }}
+          path: /tmp/image.tar
+          retention-days: 1
+
+  test:
+    name: Test (PHP ${{ matrix.php-version }})
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php-version: ['8.3', '8.4', '8.5']
+    steps:
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: image-php${{ matrix.php-version }}
+          path: /tmp
+
+      - name: Load image
+        run: docker load -i /tmp/image.tar
+
+      - name: Smoke test
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:ci-php${{ matrix.php-version }}"
+          docker run -d --name smoke-test -p 8080:80 "$IMAGE"
+
+          ok=false
+          for i in $(seq 1 15); do
+            if curl -sf http://localhost:8080/ > /dev/null 2>&1; then
+              ok=true
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "$ok" != "true" ]; then
+            docker logs smoke-test
+            docker rm -f smoke-test
+            echo "FAIL: OLS did not respond within 30s"
+            exit 1
+          fi
+
+          echo "--- PHP extensions ---"
+          failed=0
+          for ext in opcache curl mysqli mbstring gd redis imagick sockets bcmath zip intl sqlite3; do
+            if docker exec smoke-test php -m | grep -qi "$ext"; then
+              echo "PASS: $ext loaded"
+            else
+              echo "FAIL: $ext missing"
+              failed=$((failed + 1))
+            fi
+          done
+
+          docker exec smoke-test php -r "echo ini_get('opcache.jit');" 2>/dev/null \
+            | grep -q 1255 && echo "PASS: JIT opcache configured" \
+            || echo "SKIP: JIT not verifiable via CLI"
+
+          echo "--- HTTP check ---"
+          curl -sf http://localhost:8080/ > /dev/null && echo "PASS: HTTP response OK"
+
+          docker rm -f smoke-test
+
+          if [ "$failed" -gt 0 ]; then
+            echo "FAIL: $failed extension(s) missing"
+            exit 1
+          fi
+
+  scan:
+    name: Scan (PHP ${{ matrix.php-version }})
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        php-version: ['8.3', '8.4', '8.5']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: image-php${{ matrix.php-version }}
+          path: /tmp
+
+      - name: Load image
+        run: docker load -i /tmp/image.tar
+
+      - name: Trivy vulnerability scan (SARIF report)
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:ci-php${{ matrix.php-version }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Upload Trivy SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+          category: trivy-php${{ matrix.php-version }}
+
+      - name: Trivy gate (block on CRITICAL)
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:ci-php${{ matrix.php-version }}
+          format: 'table'
+          exit-code: '1'
+          severity: 'CRITICAL'
+
+  push:
+    name: Push (PHP ${{ matrix.php-version }})
+    needs: [test, scan]
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-      security-events: write
-
     strategy:
+      fail-fast: false
       matrix:
         php-version: ['8.3', '8.4', '8.5']
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -50,11 +230,10 @@ jobs:
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GHCR
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v4
+      - name: Login to ghcr.io
+        uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -75,64 +254,113 @@ jobs:
         id: php-prefix
         run: echo "value=$(echo '${{ matrix.php-version }}' | tr -d '.')" >> "$GITHUB_OUTPUT"
 
-      - name: Build test image
+      - name: Build and push multi-arch
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
-          load: true
-          tags: test-image:${{ matrix.php-version }}
-          cache-from: type=gha,scope=php${{ matrix.php-version }}
-          cache-to: type=gha,scope=php${{ matrix.php-version }},mode=max
-          build-args: |
-            OLS_IMAGE=litespeedtech/openlitespeed:${{ env.OLS_VERSION }}-lsphp${{ steps.php-prefix.outputs.value }}
-            PHP_VERSION=${{ matrix.php-version }}
-
-      - name: Smoke test
-        run: |
-          docker run -d --name smoke-test -p 8080:80 "test-image:${{ matrix.php-version }}"
-          sleep 5
-          docker exec smoke-test php -m | grep -q opcache && echo "PASS: opcache loaded"
-          docker exec smoke-test php -m | grep -q curl && echo "PASS: curl loaded"
-          docker exec smoke-test php -m | grep -q mysqli && echo "PASS: mysqli loaded"
-          docker exec smoke-test php -m | grep -q mbstring && echo "PASS: mbstring loaded"
-          docker exec smoke-test php -m | grep -q gd && echo "PASS: gd loaded"
-          docker exec smoke-test php -m | grep -q redis && echo "PASS: redis loaded"
-          docker exec smoke-test php -m | grep -q imagick && echo "PASS: imagick loaded"
-          docker exec smoke-test php -m | grep -q sockets && echo "PASS: sockets loaded"
-          docker exec smoke-test php -m | grep -q bcmath && echo "PASS: bcmath loaded"
-          docker exec smoke-test php -m | grep -q zip && echo "PASS: zip loaded"
-          docker exec smoke-test php -m | grep -q intl && echo "PASS: intl loaded"
-          docker exec smoke-test php -m | grep -q sqlite3 && echo "PASS: sqlite3 loaded"
-          docker exec smoke-test php -r "echo ini_get('opcache.jit');" 2>/dev/null | grep -q 1255 && echo "PASS: JIT opcache configured" || echo "SKIP: JIT not verifiable via CLI"
-          curl -sf http://localhost:8080/ > /dev/null && echo "PASS: HTTP response OK"
-          docker rm -f smoke-test
-
-      - name: Run Trivy vulnerability scanner
-        id: trivy
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: test-image:${{ matrix.php-version }}
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-          severity: 'CRITICAL,HIGH'
-        continue-on-error: true
-
-      - name: Upload Trivy scan results
-        if: steps.trivy.outcome == 'success'
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: 'trivy-results.sarif'
-
-      - name: Build and push multi-platform
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: ${{ github.event_name != 'pull_request' }}
+          platforms: linux/amd64,linux/arm64
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          provenance: true
+          sbom: true
           cache-from: type=gha,scope=php${{ matrix.php-version }}
           cache-to: type=gha,scope=php${{ matrix.php-version }},mode=max
-          platforms: linux/amd64,linux/arm64
           build-args: |
             OLS_IMAGE=litespeedtech/openlitespeed:${{ env.OLS_VERSION }}-lsphp${{ steps.php-prefix.outputs.value }}
             PHP_VERSION=${{ matrix.php-version }}
+
+      - name: Save digest
+        run: echo "${{ steps.build.outputs.digest }}" > /tmp/digest.txt
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-php${{ matrix.php-version }}
+          path: /tmp/digest.txt
+          retention-days: 1
+
+  sign:
+    name: Sign (PHP ${{ matrix.php-version }})
+    needs: push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        php-version: ['8.3', '8.4', '8.5']
+    steps:
+      - name: Download digest
+        uses: actions/download-artifact@v4
+        with:
+          name: digest-php${{ matrix.php-version }}
+          path: /tmp
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Login to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify digest
+        run: |
+          DIGEST=$(cat /tmp/digest.txt)
+          echo "Digest: $DIGEST"
+          [ -n "$DIGEST" ]
+
+      - name: Sign image
+        run: |
+          DIGEST=$(cat /tmp/digest.txt)
+          cosign sign --yes "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}"
+
+      - name: Verify signature
+        run: |
+          DIGEST=$(cat /tmp/digest.txt)
+          cosign verify "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}" \
+            --certificate-identity-regexp "https://github.com/${{ github.repository }}/" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+
+  cleanup:
+    name: Cleanup GHCR
+    needs: sign
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Prune old untagged images from GHCR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          OWNER="${{ github.repository_owner }}"
+          PKG="${{ github.repository }}"
+          PKG="${PKG#*/}"
+          echo "Pruning untagged versions of $PKG (keeping latest 5)"
+          IDS=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/users/$OWNER/packages/container/$PKG/versions?per_page=100" \
+            --jq '.[] | select(.metadata.container.tags | length == 0) | .id' \
+            2>/dev/null || true)
+          KEPT=0
+          for VID in $IDS; do
+            KEPT=$((KEPT + 1))
+            if [ "$KEPT" -le 5 ]; then
+              echo "Keeping untagged version $VID ($KEPT/5)"
+              continue
+            fi
+            echo "Deleting untagged version $VID"
+            gh api -X DELETE \
+              -H "Accept: application/vnd.github+json" \
+              "/users/$OWNER/packages/container/$PKG/versions/$VID" \
+              || echo "WARN: failed to delete $VID"
+          done
