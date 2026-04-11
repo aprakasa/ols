@@ -17,20 +17,6 @@ COPY conf/ /tmp/php-conf/
 RUN PHP_PREFIX=$(echo "$PHP_VERSION" | tr -d '.') && \
     apt-get update && apt-get install -y --no-install-recommends \
     inotify-tools \
-    lsphp${PHP_PREFIX} \
-    lsphp${PHP_PREFIX}-common \
-    lsphp${PHP_PREFIX}-curl \
-    lsphp${PHP_PREFIX}-intl \
-    lsphp${PHP_PREFIX}-mysql \
-    lsphp${PHP_PREFIX}-imagick \
-    lsphp${PHP_PREFIX}-redis \
-    lsphp${PHP_PREFIX}-sqlite3 \
-    lsphp${PHP_PREFIX}-bcmath \
-    lsphp${PHP_PREFIX}-mbstring \
-    lsphp${PHP_PREFIX}-xml \
-    lsphp${PHP_PREFIX}-zip \
-    lsphp${PHP_PREFIX}-gd \
-    lsphp${PHP_PREFIX}-sockets \
     && apt-get autoremove -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
