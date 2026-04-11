@@ -14,6 +14,8 @@ if [ -e /dev/random ] && [ -e /dev/urandom ]; then
     ln -s /dev/urandom /dev/random 2>/dev/null || true
 fi
 
+hostname ols 2>/dev/null || true
+
 /usr/local/lsws/bin/lswsctrl start
 
 /watch-htaccess.sh &
