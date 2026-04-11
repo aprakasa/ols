@@ -142,7 +142,7 @@ jobs:
 
           echo "--- PHP extensions ---"
           failed=0
-          for ext in opcache curl mysqli mbstring gd redis imagick sockets bcmath zip intl; do
+          for ext in opcache curl mysqli mbstring gd redis imagick sockets bcmath zip intl sqlite3; do
             if docker exec smoke-test php -m | grep -qi "$ext"; then
               echo "PASS: $ext loaded"
             else

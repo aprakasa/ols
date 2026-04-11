@@ -17,6 +17,7 @@ COPY conf/ /tmp/php-conf/
 RUN PHP_PREFIX=$(echo "$PHP_VERSION" | tr -d '.') && \
     apt-get update && apt-get install -y --no-install-recommends \
     inotify-tools \
+    lsphp${PHP_PREFIX}-sqlite3 \
     && apt-get autoremove -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
