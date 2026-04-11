@@ -30,7 +30,7 @@ COPY docker-entrypoint.sh /docker-entrypoint.sh
 
 RUN chmod +x /watch-htaccess.sh /docker-entrypoint.sh
 
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=3s --start-period=120s --retries=3 \
     CMD curl -f http://localhost/ || exit 1
 
 STOPSIGNAL SIGTERM
